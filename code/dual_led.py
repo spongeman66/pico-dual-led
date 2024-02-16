@@ -6,159 +6,162 @@ class DualLED:
     Common Cathode (negative)
     Red wire (Positive through a resistor turns RED on)
     Green wire (Positive through a resistor turns GREEN on)
-    For the LED I purchased, when both wires are energized, ONLY the RED LED is seen
 
-    Used for controlling both the Armed and the Signal LEDs
+    uses the async compatible Timer to blink LEDs
     """
     LOG = False
     COLORS = ['RED', 'GREEN']
+    DEFAULT_FREQ = 3
 
-    def __init__(self, red_pin, green_pin, primary_color, log_title = ""):
+    def __init__(self, gpio_0, gpio_1, primary_color, freq=None):
         """
-        red_pin - GPIO pin for RED color output
-        green_pin - GPIO pin for GREEN color output
-        primary_color - 'RED' or 'GREEN', primary color to use when ON/BLINKING, etc.
-        log_title - When logging, this will be prepended
+        gpio_0        - GPIO number for RED color output
+        gpio_1        - GPIO number for GREEN color output
+        primary_color - 'RED' or 'GREEN', primary color to use when generic ON/BLINKING, etc.
+        freq          - frequency to blink LED. self.DEFAULT_FREQ if not specified.
+                        Can be passed in to each blinky method
         """
-        self.red_pin = red_pin
-        self.green_pin = green_pin
+        self.gpio_0 = gpio_0
+        self.gpio_1 = gpio_1
         self.primary_color = primary_color.upper()
+        self.freq = freq or self.DEFAULT_FREQ
         self.primary_led = None
         self.secondary_led = None
         self.timer = None
-        self.tick_count = None
+        self.tick_count = 0
         self.color_map = dict()
-        if primary_color not in self.COLORS:
-            raise ValueError(f"primary color must be 'RED' or 'GREEN' not {primary_color}")
-
-        self.log_title = f"{self.primary_color}-{log_title}:" if log_title else f"{self.primary_color}:"
-        self.setup_control()
+        self.state = None
+        self.__led_0 = None
+        self.__led_1 = None
+        self.setup_control(self.primary_color)
         self.off()
-        
-    def setup_control(self):
-        self.red_led = Pin(self.red_pin, Pin.OUT, value=0)
-        self.green_led = Pin(self.green_pin, Pin.OUT, value=0)
-        self.color_map = {
-            self.COLORS[0]: self.red_led,
-            self.COLORS[1]: self.green_led
-        }
-        if self.primary_color == 'RED':
-            self.primary_led, self.secondary_led = self.red_led, self.green_led
-        else:
-            self.primary_led, self.secondary_led = self.green_led, self.red_led
-        
-    def logit(self, message):
-        if self.LOG:
-            print(f"{self.log_title}{message}")
 
+    def set_primary_color(self, color):
+        color = color.upper()
+        if color not in self.COLORS:
+            raise ValueError(f"primary color must be one of {self.COLORS} not {color}")
+        self.primary_color = color
+        if self.primary_color == self.COLORS[0]:
+            self.primary_led, self.secondary_led = self.__led_0, self.__led_1
+        else:
+            self.primary_led, self.secondary_led = self.__led_1, self.__led_0
+
+    def setup_control(self, primary_color):
+        self.__led_0 = Pin(self.gpio_0, Pin.OUT, value=0)
+        self.__led_1 = Pin(self.gpio_1, Pin.OUT, value=0)
+        self.color_map = {
+            self.COLORS[0]: self.__led_0,
+            self.COLORS[1]: self.__led_1
+        }
+        self.set_primary_color(primary_color)
+        
     def stop_timer(self):
         if self.timer:
             self.timer.deinit()
+            del self.timer
             self.timer = None
-        self.tick_count = None
+        self.tick_count = 0
 
     def led_for_color(self, color=None):
         """
-        reads the color and if None, returns primary, secondary
-        if red, returns red, green
-        if green, retruns green, red
+        reads the color and if None, returns primary led, secondary, color
+        if matches self.COLORS[0] (normally RED)   returns __led_0, __led_1, color
+        if matches self.COLORS[1] (normally GREEN) returns __led_1, __led_0, color
         """
         if not color:
-            return self.primary_led
-        color_pos = self.COLORS.index(color.upper())
-        return self.color_map[self.COLORS[color_pos]]
+            return self.primary_led, self.secondary_led, self.primary_color
+        if color.upper() not in self.COLORS:
+            raise ValueError(f"color must be None or one of {self.COLORS} not {color}")
+        pos = self.COLORS.index(color.upper())
+        other = (pos + 1) % 2
+        return self.color_map[self.COLORS[pos]], self.color_map[self.COLORS[other]], color.upper()
 
     def off(self):
         """
-        Turn both red and green off
+        Turn both off
         """
         self.stop_timer()
-        self.red_led.value(0)
-        self.green_led.value(0)
+        self.__led_0.value(0)
+        self.__led_1.value(0)
+        self.state = 'OFF'
 
-    def on(self):
+    def on(self, color=None):
         """
         Turn primary on, secondary off
+        Or turn selecte color on, other color off
         """
         self.stop_timer()
-        self.secondary_led.value(0)
-        self.primary_led.value(1)
+        p, s, c = self.led_for_color(color)
+        s.value(0)
+        p.value(1)
+        self.state = f"ON:{c}"
 
     def get_state(self):
         """
         read current state of LEDs
-        return primary then secondary state
+        return on/off status of each LED, and the current action state (on/off/blinking, etc.)
         """
-        return self.primary_led.value(), self.secondary_led.value()
+        state = {'STATE': self.state}
+        state.update({
+            c: k.value() for c, k in self.color_map.items()})
+        return state
 
-    def red_on(self):
-        """
-        implies Green off
-        """
-        self.stop_timer()
-        self.green_led.value(0)
-        self.red_led.value(1)
-        
-    def green_on(self):
-        """
-        implies Red off
-        """
-        self.stop_timer()
-        self.red_led.value(0)
-        self.green_led.value(1)
-    
-    def get_red_green_state(self):
-        """
-        read current state of LEDs
-        return red then green state
-        """
-        return self.red_led.value(), self.green_led.value()
-
-    def blink(self, freq=2, color=None):
+    def blink(self, freq=None, color=None):
         """
         blink the LED
         freq - Times to blink per second
-        color - defaults to primary, but can override by setting to 'RED' or 'GREEN'
+        color - defaults to primary, but can override by setting color
         """
-        to_blink = self.led_for_color(color)
+        freq = freq or self.freq
         self.stop_timer()
         self.off()
+        to_blink, _, c = self.led_for_color(color)
+
+        self.state = f"BLINK:{c}:{freq}Hz"
 
         def toggle_blinker(t):
             to_blink.toggle()    
         
         self.timer = Timer()
-        # need a * 2 on the frequency because we Toggle at the frequency rather than on half off half
+        # need a * 2 on the frequency because we Toggle at the frequency rather than on half - off half
         self.timer.init(mode=Timer.PERIODIC, freq=freq * 2, callback=toggle_blinker)
 
-    def alternate_colors(self, freq=5):
+    def alternate_colors(self, freq=None):
         """
         Primary On, Secondary Off, then toggle both periodically
         freq - (frequency) times per second to alternate
         """
+        freq = freq or self.freq
         self.stop_timer()
         self.on()  # Primary set to on, secondary off
-        def toggle_both(t):
+        self.state = f'ALTERNATE::{freq}Hz'
+        def __toggle_both(t):
             self.secondary_led.toggle()
             self.primary_led.toggle()
         
         self.timer = Timer()
         # need a * 2 on the frequency because we Toggle at the frequency rather than on half off half
-        self.timer.init(mode=Timer.PERIODIC, freq=freq * 2, callback=toggle_both)
+        self.timer.init(mode=Timer.PERIODIC, freq=freq * 2, callback=__toggle_both)
 
-    def blink_number(self, number, freq=2, color=None):
+    def count_number(self, number, freq=None, color=None):
         """
         blinks the LED in the default or chosen Color for
-        number - (count) times at the
-        freq - Times per second rate.
+        number - (count) times to blink before a pause
+        freq   - Times per second rate.
+        color  - Primary color, or selected color will be used for counting
         
         After the number of flashes has occurred,
-            a pause of 4 * the period (1/freq) and then the count starts over 
-        
+        a pause of 4 * the period (1/freq) and then the count starts over
+
+        Example:
+        number = 2
+        Blink Blink Pause, Blink Blink Pause, etc.
         """
+        freq = freq or self.freq
         self.off()  # Turn both colors off
 
-        led_to_blink = self.led_for_color(color)
+        to_blink, _, c = self.led_for_color(color)
+        self.state = f"COUNT:{c}:{number}:{freq}Hz"
         
         def __start_count(t):
             self.stop_timer()
@@ -167,8 +170,8 @@ class DualLED:
             self.timer.init(mode=Timer.PERIODIC, freq=freq * 2, callback=__toggle_with_count)
         
         def __toggle_with_count(t):
-            led_to_blink.toggle()
-            if led_to_blink.value():  # True implies 1 == ON 0 == OFF
+            to_blink.toggle()
+            if to_blink.value():  # True implies 1 == ON 0 == OFF
                 self.tick_count += 1
             else:
                 # since led is off, check our tick_count
