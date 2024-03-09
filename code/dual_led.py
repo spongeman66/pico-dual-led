@@ -1,4 +1,6 @@
 from machine import Pin, Timer
+from sys import print_exception
+
 
 class DualLED:
     """
@@ -9,9 +11,8 @@ class DualLED:
 
     uses the async compatible Timer to blink LEDs
     """
-    LOG = False
     COLORS = ['RED', 'GREEN']
-    DEFAULT_FREQ = 3
+    DEFAULT_FREQ = 3.0
 
     def __init__(self, gpio_0, gpio_1, primary_color, freq=None):
         """
@@ -88,13 +89,21 @@ class DualLED:
     def on(self, color=None):
         """
         Turn primary on, secondary off
-        Or turn selecte color on, other color off
+        Or turn selected color on, other color off
         """
         self.stop_timer()
         p, s, c = self.led_for_color(color)
         s.value(0)
         p.value(1)
         self.state = f"ON:{c}"
+
+    def toggle(self, color=None):
+        self.stop_timer()
+        p, s, c = self.led_for_color(color)
+        if self.state != 'OFF':
+            self.off()
+        else:
+            self.on(c)
 
     def get_state(self):
         """
@@ -106,6 +115,34 @@ class DualLED:
             c: k.value() for c, k in self.color_map.items()})
         return state
 
+    def restore_state(self, **kwargs):
+        """
+        from the state string, restore the LED function
+        :param kwargs: must have a state or STATE parameter other values are ignored
+        """
+        try:
+            state = [
+                v for k, v in kwargs.items()
+                if k.lower() == 'state'][0].split(':')
+            if state[0] == 'OFF':
+                self.off()
+            elif state[0] == 'ON':
+                # self.state = f"ON:{c}"
+                self.on(state[1])
+            elif state[0] == 'BLINK':
+                # self.state = f"BLINK:{c}:{freq}Hz"
+                self.blink(freq=state[-1][:-2], color=state[1])
+            elif state[0] == 'COUNT':
+                # self.state = f"COUNT:{c}:{number}:{freq}Hz"
+                self.count_number(state[2], freq=state[-1][:-2], color=state[1])
+                pass
+            elif state[0] == 'ALTERNATE':
+                # self.state = f'ALTERNATE::{freq}Hz'
+                self.alternate_colors(freq=state[-1][:-2])
+                pass
+        except Exception as e:
+            print_exception(e)
+
     def blink(self, freq=None, color=None):
         """
         blink the LED
@@ -113,13 +150,13 @@ class DualLED:
         color - defaults to primary, but can override by setting color
         """
         freq = freq or self.freq
+        freq = float(freq)
         self.stop_timer()
         self.off()
         to_blink, _, c = self.led_for_color(color)
-
         self.state = f"BLINK:{c}:{freq}Hz"
 
-        def toggle_blinker(t):
+        def toggle_blinker(_t):
             to_blink.toggle()    
         
         self.timer = Timer()
@@ -132,10 +169,12 @@ class DualLED:
         freq - (frequency) times per second to alternate
         """
         freq = freq or self.freq
+        freq = float(freq)
         self.stop_timer()
         self.on()  # Primary set to on, secondary off
         self.state = f'ALTERNATE::{freq}Hz'
-        def __toggle_both(t):
+
+        def __toggle_both(_t):
             self.secondary_led.toggle()
             self.primary_led.toggle()
         
@@ -155,21 +194,23 @@ class DualLED:
 
         Example:
         number = 2
-        Blink Blink Pause, Blink Blink Pause, etc.
+        Blink-Blink Pause, Blink-Blink Pause, etc.
         """
         freq = freq or self.freq
+        freq = float(freq)
+        number = int(number)
         self.off()  # Turn both colors off
 
         to_blink, _, c = self.led_for_color(color)
         self.state = f"COUNT:{c}:{number}:{freq}Hz"
         
-        def __start_count(t):
+        def __start_count(_t):
             self.stop_timer()
             self.tick_count = 0
             self.timer = Timer()
             self.timer.init(mode=Timer.PERIODIC, freq=freq * 2, callback=__toggle_with_count)
         
-        def __toggle_with_count(t):
+        def __toggle_with_count(_t):
             to_blink.toggle()
             if to_blink.value():  # True implies 1 == ON 0 == OFF
                 self.tick_count += 1
